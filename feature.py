@@ -309,13 +309,13 @@ class LBP():
 class PHOG():
     def __init__(self, nBins, maxAng, level=3):
         '''
-        level: level of the pyramid, (limit the levels to 3 to prevent over fitting). When level=1, PHOG=HOG
-        bins: the number of bins to be quantized to (from 10 to 80, 20-180, 40-360)
-        maxAng: set maxAng as 180 or 360 to set angel range to [0, 180] or [0, 360]
+        nBins: Number of bins to be quantized to (from 10 to 80, 20-180, 40-360)
+        maxAng: Set maxAng as 180 or 360 to set angel range to [0, 180] or [0, 360]
+        level: Level of the pyramid, (limit the levels to 3 to prevent over fitting). 
+               When level=0, PHOG=HOG. For level=3, there are actually 4 levels from
+               0 to 3.
         '''
         if level > 3 or (maxAng not in [180, 360]):
-            print(level)
-            print(maxAng)
             raise FeatureParameterInvalid()
         self.level = level
         self.nBins = nBins
@@ -323,61 +323,67 @@ class PHOG():
          
     def describe(self, img):
         '''
-        return:
-        a python list will be returned. This list contains the histogram from all levels. 
-        It is convenient for weighting when compute the distance. 
+        compute PHOG. Row 1 is from level 0, row 2 to 5 are from level 1, and so on. 
         '''
         # step1: CANNY
         imgCnny = cv2.Canny(img, 100, 200) # TODO: need to optimize
-        # print("After Canny")
-        # print(imgCnny)
 
         # step2: Sobel(3x3) -> gradient
         gX = cv2.Sobel(imgCnny, cv2.CV_64F, 1, 0, ksize=3)
         gY = cv2.Sobel(imgCnny, cv2.CV_64F, 0, 1, ksize=3)
-        # imgAng = np.rad2deg(np.arctan(gY / gX)) # should be cautious that when gX is zero 
-        # print("Gradient X, Y")
-        # print(gX)
-        # print(gY)
         imgMag, imgAng = cv2.cartToPolar(gX, gY, angleInDegrees=True);
-        # print("Magnitude and angle image")
-        # print(imgMag)
-        # print(imgAng)
         
         # step3: Quantize orientation into K bins
-        # print(imgOri)
         imgAngQ = self.quantize(imgAng, self.nBins, self.maxAng)
-        # print("Angle after quantization")
-        # print(imgAngQ)
 
-        # step4: Compute pyrmaid histogram
-        hist = []
-        s = 0
-        for i in range(self.level):
-            h = self.pyramidHist(imgMag, imgAngQ, i)
-            s = s + np.sum(h)
-            hist.append(h)
-        for i in range(self.level):
-            hist[i] = hist[i] / s   
-        return hist
+        # step4: Compute phog 
+        phog = np.zeros((0, self.nBins))
+        for lev in range(self.level+1):
+            levelHog = self.compute_level_hog(imgMag, imgAngQ, lev)
+            phog = np.vstack([phog, levelHog])
+        
+        ## Normalize
+        phog = phog / np.sum(phog) 
+        return phog.reshape(1, -1)
 
-    def pyramidHist(self, imgMag, imgAng, lev):
+    def generate_weight(self, weights):
+        '''
+        weights: numpy array. For example, [0.1, 0.2, 0.3, 0.4], 0.1 is weight for level 0...
+        '''
+        if weights.size != self.level + 1:
+            raise FeatureParameterInvalid
+        n = np.arange(0, self.level+1)
+        nRow = np.power(4, n)
+        w = np.array([])
+        for i, j in enumerate(nRow):
+            w = np.append(w, np.ones(j) * weights[i])
+        return w.T 
+
+    def describe_with_weights(self, img, weights):
+        phog = self.describe(img)
+        w = self.generate_weight(weights)
+        wPhog = phog * w 
+        ## Normalize
+        wPhog = wPhog / np.sum(wPhog)
+        return wPhog.reshape(1, -1)
+
+    def compute_level_hog(self, imgMag, imgAng, lev):
         """
-        computer the pyramid histogram. 
-        lev: range 0~(level-1)
+        computer the HOG for the given level.
+        lev: range 0~level
         """
-        hist = np.array([])
+        levelHog = np.zeros((0, self.nBins))
         dRow = imgAng.shape[0] // (2**lev)
         dCol = imgAng.shape[1] // (2**lev)
+        dAng = self.maxAng // self.nBins # delta of angle
+        b = np.arange(0, self.maxAng, dAng) # bins array for histogram
         for i in range(2**lev):
             for j in range(2**lev):
-                regionMag = imgMag[i*dRow:(i+1)*dRow, j*dCol:(j+1)*dCol].flatten()
-                regionAng = imgAng[i*dRow:(i+1)*dRow, j*dCol:(j+1)*dCol].flatten()
-                dAng = self.maxAng // self.nBins # delta of angle
-                b = np.arange(0, self.maxAng, dAng) # bins for histogram
-                histTmp = self.compute_hog(regionMag, regionAng, b)
-                hist = np.append(hist, histTmp)
-        return hist
+                regionMag = imgMag[i*dRow:(i+1)*dRow, j*dCol:(j+1)*dCol]
+                regionAng = imgAng[i*dRow:(i+1)*dRow, j*dCol:(j+1)*dCol]
+                hog = self.compute_hog(regionMag, regionAng, b)
+                levelHog = np.vstack([levelHog, hog])
+        return levelHog
 
     @staticmethod
     def quantize(imgAng, nBins, maxAng):
@@ -397,12 +403,12 @@ class PHOG():
     @staticmethod
     def compute_hog(regionMag, regionAng, bins):
         '''
-        compute the histogram of the angles, take the magnitude into consideration. 
+        compute HOG. 
         '''
-        hist = np.array([])
+        hog = np.array([])
         for b in bins:
-            hist = np.append(hist, np.sum(regionMag[regionAng==b])) # bin counts = magnitude * (counts of specific angle)
-        return hist 
+            hog = np.append(hog, np.sum(regionMag[regionAng==b])) # bin counts = magnitude * (counts of specific angle)
+        return hog 
     
 # np.set_printoptions(precision=4) 
 class LPQ():
@@ -536,24 +542,17 @@ def phog_unit_test():
                         [204,  50, 249,  65],
                         [ 65,  60,  45, 248],
                         [ 71, 170, 167,  70]], dtype=np.uint8)
-    print(imgTest)
-    phog = PHOG(nBins=20, maxAng=180, level=1)
-    h1 = phog.describe(imgTest)
+    phog = PHOG(nBins=20, maxAng=180, level=0)
+    h1 = phog.describe_with_weights(imgTest, np.array([1]))
     expectH1 = np.array([ 0.2127,    0,    0,    0,
                              0,    0,    0, 0.2706,
                              0,    0, 0.3545,    0,
                              0,    0,    0, 0.0501,
                              0, 0.1121,    0,    0])
     hist = np.hstack([h1[0]])
-    print(hist, expectH1)
+    print(hist)
+    print(expectH1)
     print("error: ", np.linalg.norm(hist - expectH1))
-
-def phog_test():
-    img = cv2.imread("/home/rossihwang/faceRecognition/my/101_ObjectCategories/accordion/image_0001.jpg", cv2.IMREAD_GRAYSCALE)
-    phog = PHOG(bins=20, maxAng=180, level=3)
-    h1 = phog.describe(img)
-    for i in range(3):
-        print(len(h1[i]))
     
 def lpq_unit_test():
     samp = np.load("../ckpAngerSample64x56.npy")
