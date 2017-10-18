@@ -84,7 +84,7 @@ class EigenFace():
 
 class FisherFace():
     '''
-    Not validated
+    Don't use
     '''
     def __init__(self):
         self.isFit = False
@@ -185,21 +185,25 @@ class FisherFace():
     #     proj = self.fshFace[:, :num].T @ demean
     #     return (self.fshFace[:, :num] @ proj) + self.mean
         
-
 class LBPPattern():
-    def __init__(self, bits=8, transThres=2):
+    """Generate a table for fast looking up uniform pattern
+    Args:
+        nBits: Use nBits to encode the pattern
+        transThres: If pattern has at most [transThres] bitwise transitions, it will be classified as uniform pattern
+    """
+    def __init__(self, nBits=8, transThres=2):
         self.uniform = []
         self.nonuniform = []
-        self.max = 2**bits
-        self.bits = bits 
+        self.max = 2**nBits
+        self.nBits = nBits 
         self.transThres = transThres
         self.init_lookup_table()
-        self.numOfBins = len(self.uniform_idx) + 1
+        self.nBins = len(self.uniform_idx) + 1
 
     def init_lookup_table(self):
         for i in range(self.max):
             if self.is_uniform(i):
-                # printprint("{:08b}".format(i))
+                # print("{:08b}".format(i))
                 self.uniform.append(i)
             else:
                 self.nonuniform.append(i)
@@ -210,7 +214,7 @@ class LBPPattern():
         bt = 0
         mask = 0x03
         d = data 
-        for i in range(self.bits-1):
+        for i in range(self.nBits-1):
             # print("{:08b}".format(d))
             if mask & d == 0x01:
                 bt += 1
@@ -219,7 +223,7 @@ class LBPPattern():
 
         mask = 0x03
         d = data
-        for i in range(self.bits-1):
+        for i in range(self.nBits-1):
             # print("{:08b}".format(d))
             if mask & d == 0x02:
                 bt += 1
@@ -239,40 +243,50 @@ class LBPPattern():
         return self.nonuniform
 
 class LBP():
-    '''
+    """LBP feature class
+    Generate LBP features for image or 
+
     cite:http://www.pyimagesearch.com/2015/12/07/local-binary-patterns-with-python-opencv/
-    '''
-    def __init__(self, numOfPoints, radius):
-        self.numOfPoints = numOfPoints
+    Args:
+        nPoints: Number of coding bits in LBP feature
+        radius: LBP radius
+    """
+    def __init__(self, nPoints, radius):
+        self.nPoints = nPoints
         self.radius = radius
-        self.pattern = LBPPattern(numOfPoints, 2)
+        self.pattern = LBPPattern(nPoints, 2)
 
     def describe(self, img, eps=1e-7):
-        # Compute the LBP representation of the image, and 
-        # then use the representation to build the histogram 
-        # of patterns
-        lbp = feature.local_binary_pattern(img, self.numOfPoints, self.radius, method="default")
-        #print(lbp)
+        ## Compute the LBP representation of the image
+        lbp = feature.local_binary_pattern(img, self.nPoints, self.radius, method="default")
         
+        ## Compute the histogram
         (hist, _) = np.histogram(lbp.flatten(), bins=np.arange(0, 257), range=(0, 255))
 
-        # Compact the non-uniform pattern in one bin
+        ## Compact the non-uniform pattern and put in last bin
         histCompact = np.zeros(len(self.pattern.uniform_idx)+1)
         histCompact[:-1] = hist[self.pattern.uniform_idx]
         histCompact[-1] = np.sum(hist[self.pattern.nonuniform_idx])
 
-        # Normalize the histogram
-        histCompact = histCompact.astype("float")
-        histCompact /= (histCompact.sum() + eps)
+        ## Normalize the histogram
+        # histCompact = histCompact.astype("float")
+        # histCompact /= (histCompact.sum() + eps)
+        histCompact /= histCompact.sum()
 
-        # print(np.sum(histCompact))
         return histCompact
 
-    def describe_regions(self, img, shape):
-        '''
-        output: [Region1Hist, Region2Hist, ..., RegionNHist].T
-        '''
-        row, col = shape
+    def describe_regions(self, img, regions, weights=None):
+        """Given regions and weights, generate LBP feature
+        Args:
+            img: Input image.
+            regions: tuple. Example (7, 6), 7 rows and 6 columns.
+            weights: numpy array, it's size should equal to regions number.
+        Returns: 
+            numpy array, LBP histogram. 
+        Raises:
+            If weights size and regions number are not match, FeatureParameterInvalid() will be raised.
+        """
+        row, col = regions
         dh, dw = img.shape[0]/np.float(row), img.shape[1]/np.float(col)
         colTemp = np.ones(col); colTemp[0] = 0
         rowTemp = np.ones(row); rowTemp[0] = 0
@@ -280,20 +294,28 @@ class LBP():
         ly = np.uint8(np.add.accumulate(rowTemp * dh))
         dh = np.uint8(dh)
         dw = np.uint8(dw)
-        hist = np.zeros((0, self.pattern.numOfBins))
+        hist = np.zeros((0, self.pattern.nBins))
 
         for y in ly:
             for x in lx:
                 h = self.describe(img[y:y+dh, x:x+dw])
                 hist = np.vstack((hist, h))
-        # print("[Debug] histogram shape: {}".format(hist.shape))
-        return hist
+        if weights is not None:
+            if regions[0]*regions[1] != weights.size:
+                raise FeatureParameterInvalid("weights size doesn't match the regions size")
+            else:
+                hist *= weights
+        ## Normalize
+        hist /= np.sum(hist) 
+        return hist.flatten()
 
-    def plot_regions(self, img, shape):
-        row, col = shape
+    def plot_regions(self, img, regions):
+        """Plot the regions
+        """
+        row, col = regions
         dh, dw = img.shape[0]/np.float(row), img.shape[1]/np.float(col)
-        lx = np.uint8(np.add.accumulate(np.ones(col - 1) * dw))
-        ly = np.uint8(np.add.accumulate(np.ones(row - 1) * dh))
+        lx = np.uint8(np.add.accumulate(np.ones(col-1) * dw))
+        ly = np.uint8(np.add.accumulate(np.ones(row-1) * dh))
         plt.figure()
         plt.imshow(img, cmap="gray")
         ax = plt.gca()
@@ -309,11 +331,12 @@ class LBP():
 class PHOG():
     def __init__(self, nBins, maxAng, level=3):
         '''
-        nBins: Number of bins to be quantized to (from 10 to 80, 20-180, 40-360)
-        maxAng: Set maxAng as 180 or 360 to set angel range to [0, 180] or [0, 360]
-        level: Level of the pyramid, (limit the levels to 3 to prevent over fitting). 
-               When level=0, PHOG=HOG. For level=3, there are actually 4 levels from
-               0 to 3.
+        Args:
+            nBins: Number of bins to be quantized to (from 10 to 80,    20-180, 40-360)
+            maxAng: Set maxAng as 180 or 360 to set angel range to [0, 180] or [0, 360]
+            level: Level of the pyramid, (limit the levels to 3 to prevent over fitting). 
+                When level=0, PHOG=HOG. For level=3, there are actually 4 levels from
+                0 to 3.
         '''
         if level > 3 or (maxAng not in [180, 360]):
             raise FeatureParameterInvalid()
@@ -351,7 +374,7 @@ class PHOG():
         weights: numpy array. For example, [0.1, 0.2, 0.3, 0.4], 0.1 is weight for level 0...
         '''
         if weights.size != self.level + 1:
-            raise FeatureParameterInvalid
+            raise FeatureParameterInvalid("[PHOG]: weights size and level are not matched")
         n = np.arange(0, self.level+1)
         nRow = np.power(4, n)
         w = np.array([])
@@ -520,15 +543,13 @@ class LPQ():
         return np.histogram(Bx.flatten(), bins=np.arange(0, 257), range=(0, 255))
             
 def lbp_test():
-    img = cv2.imread("../training/anger/S011_004_00000021.png", cv2.IMREAD_GRAYSCALE)
-    # img = np.zeros((3, 3))
+    img = np.arange(100).reshape(10, 10)
+    weights = np.ones((5, 5)).reshape(-1, 1)
+
     lbp = LBP(8, 1)
-    # lbp.plot_regions(img, 4, 4)
-    print(lbp.describe_regions(img, 4, 4))
-    # histLBP = lbp.describe(img)
-    # plt.figure()
-    # plt.stem(histLBP)
-    plt.show() 
+    lbp.plot_regions(img, (5, 5))
+    print(lbp.describe_regions(img, (5, 5), weights))
+    plt.show()
 
 def phog_unit_test():
     '''
@@ -561,6 +582,6 @@ def lpq_unit_test():
 
 if __name__ == "__main__":
     # eigenface_test()
-    # __lbp_test()
-    phog_unit_test()
+    lbp_test()
+    # phog_unit_test()
     # lpq_unit_test()
