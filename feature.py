@@ -343,8 +343,10 @@ class PHOG():
         self.level = level
         self.nBins = nBins
         self.maxAng = maxAng
+        dAng = self.maxAng / self.nBins # delta of angle
+        self.bins = np.arange(0, self.maxAng, dAng) # bins array for histogram
          
-    def describe(self, img):
+    def describe(self, img, weights):
         '''
         compute PHOG. Row 1 is from level 0, row 2 to 5 are from level 1, and so on. 
         '''
@@ -357,7 +359,7 @@ class PHOG():
         imgMag, imgAng = cv2.cartToPolar(gX, gY, angleInDegrees=True);
         
         # step3: Quantize orientation into K bins
-        imgAngQ = self.quantize(imgAng, self.nBins, self.maxAng)
+        imgAngQ = self.quantize(imgAng, self.bins, self.maxAng)
 
         # step4: Compute phog 
         phog = np.zeros((0, self.nBins))
@@ -366,12 +368,24 @@ class PHOG():
             phog = np.vstack([phog, levelHog])
         
         ## Normalize
-        phog = phog / np.sum(phog) 
-        return phog.reshape(1, -1)
+        wPhog = phog / np.sum(phog) 
+
+        ## If need weighting
+        if weights is not None:
+            w = self.generate_weight(weights)
+            wPhog = phog * w 
+            ## Normalize
+            wPhog /= np.sum(wPhog)
+
+        return wPhog.flatten()
 
     def generate_weight(self, weights):
         '''
-        weights: numpy array. For example, [0.1, 0.2, 0.3, 0.4], 0.1 is weight for level 0...
+        Args:
+            weights: numpy array. For example, [0.1, 0.2, 0.3, 0.4], 0.1 is weight for level 0...
+        Returns:
+            numpy array, column vector
+            Example, level number is 2, weights is [0.1, 0.2], return is [0.1, 0.2, 0.2, 0.2, 0.2]
         '''
         if weights.size != self.level + 1:
             raise FeatureParameterInvalid("[PHOG]: weights size and level are not matched")
@@ -380,15 +394,7 @@ class PHOG():
         w = np.array([])
         for i, j in enumerate(nRow):
             w = np.append(w, np.ones(j) * weights[i])
-        return w.T 
-
-    def describe_with_weights(self, img, weights):
-        phog = self.describe(img)
-        w = self.generate_weight(weights)
-        wPhog = phog * w 
-        ## Normalize
-        wPhog = wPhog / np.sum(wPhog)
-        return wPhog.reshape(1, -1)
+        return w.reshape(-1, 1)
 
     def compute_level_hog(self, imgMag, imgAng, lev):
         """
@@ -398,29 +404,30 @@ class PHOG():
         levelHog = np.zeros((0, self.nBins))
         dRow = imgAng.shape[0] // (2**lev)
         dCol = imgAng.shape[1] // (2**lev)
-        dAng = self.maxAng // self.nBins # delta of angle
-        b = np.arange(0, self.maxAng, dAng) # bins array for histogram
+        
         for i in range(2**lev):
             for j in range(2**lev):
                 regionMag = imgMag[i*dRow:(i+1)*dRow, j*dCol:(j+1)*dCol]
                 regionAng = imgAng[i*dRow:(i+1)*dRow, j*dCol:(j+1)*dCol]
-                hog = self.compute_hog(regionMag, regionAng, b)
+                hog = self.compute_hog(regionMag, regionAng, self.bins)
                 levelHog = np.vstack([levelHog, hog])
         return levelHog
 
     @staticmethod
-    def quantize(imgAng, nBins, maxAng):
+    def quantize(imgAng, bins, maxAng):
         '''
         quantize the angles according to the given number of bins. 
         '''
         if maxAng == 180:
             imgAng[imgAng>=180] = imgAng[imgAng>=180] - 180
-        dAng = maxAng // nBins
-        for a in range(nBins+1):
-            largerIdx = imgAng > (a*dAng)
-            smallerIdx = imgAng < ((a+1)*dAng)
+        unquantizeIdx = np.ones_like(imgAng, dtype=bool)
+        for i in bins[::-1]: # quantization starts from the largest angle
+            smallerIdx = imgAng <= maxAng
+            largerIdx = imgAng >= i
             idx = np.logical_and(largerIdx, smallerIdx)
-            imgAng[idx] = a*dAng
+            quantizeIdx = np.logical_and(idx, unquantizeIdx)
+            imgAng[quantizeIdx] = i 
+            unquantizeIdx = np.logical_xor(quantizeIdx, unquantizeIdx)
         return imgAng
 
     @staticmethod
@@ -564,16 +571,17 @@ def phog_unit_test():
                         [ 65,  60,  45, 248],
                         [ 71, 170, 167,  70]], dtype=np.uint8)
     phog = PHOG(nBins=20, maxAng=180, level=0)
-    h1 = phog.describe_with_weights(imgTest, np.array([1]))
-    expectH1 = np.array([ 0.2127,    0,    0,    0,
+    h = phog.describe(imgTest, np.ones(1))
+    ## nBins=20, maxAng=180, level=0
+    expectH = np.array([ 0.2127,    0,    0,    0,
                              0,    0,    0, 0.2706,
                              0,    0, 0.3545,    0,
                              0,    0,    0, 0.0501,
                              0, 0.1121,    0,    0])
-    hist = np.hstack([h1[0]])
-    print(hist)
-    print(expectH1)
-    print("error: ", np.linalg.norm(hist - expectH1))
+    print(h)
+    print(expectH)
+    print("Error: ", np.linalg.norm(h - expectH))
+    print("Expected error: {}".format(4.80443739586e-05))
     
 def lpq_unit_test():
     samp = np.load("../ckpAngerSample64x56.npy")
@@ -582,6 +590,6 @@ def lpq_unit_test():
 
 if __name__ == "__main__":
     # eigenface_test()
-    lbp_test()
-    # phog_unit_test()
+    # lbp_test()
+    phog_unit_test()
     # lpq_unit_test()
