@@ -16,6 +16,8 @@ class FeatureParameterInvalid(Exception):
 
 class EigenFace():
     '''
+    Refer to paper, Turk and Pentland, "Eigenfaces for Recognition"
+    TODO: Interfaces need to update to sklearn-like
     '''
     def __init__(self):
         super().__init__()
@@ -83,6 +85,9 @@ class EigenFace():
         return (self.eigFace[:, :num] @ proj) + self.mean
 
 class FisherFace():
+    """
+    Refer to paper, Belhumeur,Hespanha and Kriegman, "Eigenfaces vs. Fisherfaces: Recognition Using Class Specific Linear Projection" 
+    """
     def __init__(self):
         pass 
 
