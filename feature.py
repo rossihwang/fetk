@@ -1,5 +1,5 @@
 import numpy as np
-import numpy.linalg as la
+import scipy.linalg as la
 import matplotlib.pyplot as plt 
 import cv2
 from skimage import feature 
@@ -32,9 +32,9 @@ class EigenFace():
         demean = trainingCols - self.mean
         ## Compute the eigenface
         scatter = np.dot(demean.T, demean)
-        self.eigVal, eigVect = la.eig(scatter)
-        self.eigVal = self.eigVal.real 
-        eigVect = eigVect.real
+        self.eigVal, eigVect = la.eigh(scatter)
+        # self.eigVal = self.eigVal.real 
+        # eigVect = eigVect.real
         self.eigFace = np.dot(demean, eigVect) ## Use a trick 
         ## Normalize eigenFace, -> unit vector
         self.eigFace = np.divide(self.eigFace, la.norm(self.eigFace, axis=0))
@@ -83,107 +83,79 @@ class EigenFace():
         return (self.eigFace[:, :num] @ proj) + self.mean
 
 class FisherFace():
-    '''
-    Don't use
-    '''
     def __init__(self):
-        self.isFit = False
+        pass 
 
-    def fit_transform(self, trainingCols, labels, numOfComponents=None):
+    def fit(self, X, y):
+        """
+        Args:
+            X: training sample, shape(n_samples x n_features)
+            y: training labels, 
+        Notation:
+        N: number of samples
+        m: diamention of feature
+        c: number of class
+
+        Test:
+        >>> import numpy as np
+        >>> from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+        >>> X = np.array([[-1, -1], [-2, -1], [-3, -2], [1, 1], [2, 1], [3, 2]])
+        >>> y = np.array([1, 1, 1, 2, 2, 2])
+        >>> clf = LinearDiscriminantAnalysis(solver="eigen")
+        >>> clf.fit(X, y)
+        """
         ## Compute PCA
-        self.mean = np.mean(trainingCols, 1, keepdims=True)
-        demean = trainingCols - self.mean 
-        scatter = demean.T @ demean
-        eigVal, eigVect = la.eig(scatter)
-        eigVal = eigVal.real 
-        eigVect = eigVect.real
-        # print("eigVect: ", eigVect.dtype)
-        eigVect= demean @ eigVect 
-        sortedIdx = np.argsort(eigVal)[::-1]
-        eigVect = eigVect[:, sortedIdx]
-        ### Normalize eigenvectors
-        eigVect = np.divide(eigVect, la.norm(eigVect, axis=0))
-        ### 
-        numOfClass = np.count_nonzero(np.bincount(labels)) # or np.bincount(labels).size
-        numOfPerClass = np.zeros(numOfClass)
-        for i in range(numOfClass):
-            numOfPerClass[i] = labels[labels==i].size
-         
-        ## Compute between-class scatter
-        meansOfClasses = np.zeros((trainingCols.shape[0], numOfClass))
-        for i in range(numOfClass):
-            meansOfClasses[:, i, np.newaxis] = np.mean(trainingCols[:, labels==i], 1, keepdims=True)
-        ## Checked
-
-        scatterBtw = np.zeros((trainingCols.shape[0], trainingCols.shape[0]))
-        U = meansOfClasses - self.mean 
-        scatterBtw = U @ np.diag(numOfPerClass) @ U.T  
-        # for i in range(numOfClass):
-        #     tmp = meansOfClasses[:, i, np.newaxis] - self.mean
-        #     scatterBtw = scatterBtw + (np.dot(tmp, tmp.T))
-
-        ## Compute within-class scatter
-        scatterWth = np.zeros_like(scatterBtw)
-        for i in range(numOfClass):
-            X = trainingCols[:, labels==i] - meansOfClasses[:, i, np.newaxis]
-            scatterWth = scatterWth + (X @ X.T) 
-        # for i in range(numOfClass):
-        #     tmp = trainingCols[:, labels==i] - meansOfClasses[:, i].reshape(-1, 1)
-        #     scatterWth = scatterWth + np.dot(tmp, tmp.T)
+        self.mean = np.mean(X, 0)
+        demean = X - self.mean
+        scatter = demean.T @ demean 
+        eigVal, eigVect = la.eigh(scatter)
+        # eigVal = eigVal.real
+        # eigVect = eigVect.real 
+        eigValDecIdx = np.argsort(eigVal)[::-1]
+        eigVal, eigVect = eigVal, eigVect[:, eigValDecIdx]
         
-        ## Sb, Sw diamensional reduction by PCA
-        numOfEigV = trainingCols.shape[1] - numOfClass # N - c
-        vect = eigVect[:, :numOfEigV]
-        scatterBtwRdc = vect.T @ scatterBtw @ vect
-        scatterWthRdc = vect.T @ scatterWth @ vect
+        ## Reduce the feature diamension to N-c 
+        nPerClass = np.bincount(y)
+        nClass = nPerClass.size
+        # print("nPerClass: ", nPerClass)
+        # print("nClass: ", nClass)
+        nEigVect = X.shape[0] - nClass # N - c
+        eigVect = eigVect[:, :nEigVect]  # m x (N - c)
+        eigVect /= np.sum(eigVect, 0)
+        # print("eigVect: ", eigVect.shape)
+        Xpca = X @ eigVect # N x (N - c)
 
-        fshVal, fshVect = la.eig(la.inv(scatterWthRdc) @ scatterBtwRdc)
-        ### fshVal, fshVect are complex here!
-        fshVal = fshVal.real 
-        fshVect = fshVect.real 
-        sortedIdx = np.argsort(fshVal)[::-1]
-        fshVal = fshVal[sortedIdx]
-        print(fshVal)
-        fshVect = fshVect[:, sortedIdx]  
-        ### Normalize
-        # fshVect = np.divide(fshVect, la.norm(fshVect, axis=0))
+        ## Compute FLD
+        meanPca = np.mean(Xpca, 0)
+        meanPcaClass = np.zeros((nClass, Xpca.shape[1]))
+        for i in range(nClass):
+            meanPcaClass[i, :] = np.mean(Xpca[y==i, :], 0)
         
-        ## fisherface
-        self.numOfFshV = numOfClass - 1 # c - 1
-        ## eigVect:(n)x(N-c), fshVect:(N-c)x(c-1) 
-        self.fshFace = eigVect[:, 0:numOfEigV] @ fshVect[:, 0:self.numOfFshV]
+        ### Compute btween-class scatter
+        tmp = meanPcaClass - meanPca  # c x (N - c)
+        scatterBtw = tmp.T @ np.diag(nPerClass) @ tmp # (N - c) x (N - c) 
+        ### Computer within-class scatter
+        scatterWth = np.array([])
+        for i in range(nClass):
+            tmp = Xpca[y==i, :] - meanPcaClass[i, :]
+            scatterWth = scatterWth + tmp.T @ tmp if scatterWth.size else tmp.T @ tmp # (N - c) x (N -c)
+        # print("scatterBtw: ", scatterBtw.shape)
+        # print("scatterWth: ", scatterWth.shape)
+        
+        self.fshVal, self.fshVect = la.eigh(scatterBtw, scatterWth) # (N - c) x (N - c)
+        # self.fshVal = self.fshVal.real 
+        # self.fshVect = self.fshVect.real 
+        self.fshVect = self.fshVect[:, np.argsort(self.fshVal)[::-1]][:, :nClass-1] # (N - c) x (c - 1) 
+        self.fshVect /= np.sum(self.fshVect, 0)
+        # print("fshVect: ", self.fshVect.shape)
+        self.OptVect = self.fshVect.T @ eigVect.T # (c - 1) x m 
 
-        self.isFit = True
-        if numOfComponents == None:
-            self.numOfComponents = self.numOfFshV
-        else:
-            self.numOfComponents = numOfComponents
-        return self.fshFace[:, :self.numOfComponents].T @ demean
+    def transform(self, X):
+        return (X - np.mean(X, 0)) @ self.OptVect.T # (N x m) @ (m x c-1) = N x (c - 1)
 
-    def transform(self, testCols, numOfComponents=None):
-        if not self.isFit:
-            return 
-        if numOfComponents == None:
-            num = self.numOfComponents
-        else:
-            num = numOfComponents
-        return self.fshFace[:, :num].T @ (testCols - self.mean)
-
-    # def reconstruct(self, col, numOfComponents=0):
-    #     '''
-    #     This function can be used for face detection.
-    #     '''
-    #     if not self.isFit:
-    #         print("Data is not trained")
-    #         return 
-
-    #     if numOfComponents != 0:
-    #         num = numOfComponents
-    #     else:
-    #         num = self.numOfFshV
-    #     demean = col - self.mean
-    #     proj = self.fshFace[:, :num].T @ demean
-    #     return (self.fshFace[:, :num] @ proj) + self.mean
+    def fit_transform(self, X, y):
+        self.fit(X, y)
+        return self.transform(X)
         
 class LBPPattern():
     """Generate a table for fast looking up uniform pattern
@@ -569,7 +541,7 @@ class LPQ():
         dh = np.uint8(dh)
         dw = np.uint8(dw)
         hist = np.zeros((0, 256))
-
+        
         for y in ly:
             for x in lx:
                 h = self.describe(img[y:y+dh, x:x+dw])
@@ -582,8 +554,46 @@ class LPQ():
         ## Normalize
         hist /= np.sum(hist) 
         return hist.flatten()
-            
-def lbp_test():
+
+class MyFeature():
+    def __init__(self, nRows, nBins):
+        self.nRows = nRows
+        dAng = 360 / nBins 
+        self.bins = np.arange(0, 360, dAng)
+        self.lbp = LBP(8, 2)
+
+    def describe(self, img):
+        kernel = np.ones((3, 3), np.float32)/9
+        imgBlur = cv2.filter2D(img, -1, kernel)
+
+        gX = cv2.Sobel(imgBlur, cv2.CV_64F, 1, 0, ksize=3)
+        gY = cv2.Sobel(imgBlur, cv2.CV_64F, 0, 1, ksize=3)
+        imgMag, imgAng = cv2.cartToPolar(gX, gY, angleInDegrees=True);
+        imgAngQ = self.quantize(imgAng, self.bins)
+  
+        hist1 = self.lbp.describe(imgMag)
+        hist2 = self.lbp.describe(imgAngQ)
+        hist = np.hstack([hist1, hist2])
+        hist /= np.sum(hist)
+        return imgMag, hist
+
+    @staticmethod
+    def quantize(imgAng, bins):
+        '''
+        quantize the angles according to the given number of bins. 
+        '''
+        unquantizeIdx = np.ones_like(imgAng, dtype=bool)
+        for i in bins[::-1]: # quantization starts from the largest angle
+            smallerIdx = imgAng <= 360
+            largerIdx = imgAng >= i
+            idx = np.logical_and(largerIdx, smallerIdx)
+            quantizeIdx = np.logical_and(idx, unquantizeIdx)
+            imgAng[quantizeIdx] = i 
+            unquantizeIdx = np.logical_xor(quantizeIdx, unquantizeIdx)
+        return imgAng
+
+
+def lbp_unit_test():
     img = np.arange(100).reshape(10, 10)
     weights = np.ones((5, 5)).reshape(-1, 1)
 
@@ -618,12 +628,12 @@ def phog_unit_test():
     print("Expected error: {}".format(4.80443739586e-05))
     
 def lpq_unit_test():
-    samp = np.load("../ckpAngerSample64x56.npy")
+    img = np.arange(100).reshape(10, 10)
     lpq = LPQ(3)
-    print(lpq.describe(samp[:,:,0]))
+    print(lpq.describe_regions(img, (2, 2)))
 
 if __name__ == "__main__":
     # eigenface_test()
-    # lbp_test()
-    phog_unit_test()
-    # lpq_unit_test()
+    # lbp_unit_test()
+    # phog_unit_test()
+    lpq_unit_test()
