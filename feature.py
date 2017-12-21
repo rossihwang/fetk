@@ -5,9 +5,10 @@ import cv2
 from skimage import feature 
 import scipy.signal as sig  
 from scipy.spatial import distance as dist 
+from sklearn.decomposition import PCA
 
-import sys
-sys.path.append("../")
+# import sys
+# sys.path.append("../")
 import matplotlib.lines as lines
 
 
@@ -120,7 +121,7 @@ class FisherFace():
         eigVal, eigVect = eigVal, eigVect[:, eigValDecIdx]
         
         ## Reduce the feature diamension to N-c 
-        nPerClass = np.bincount(y)
+        nPerClass = np.bincount(y.astype(np.int64))
         nClass = nPerClass.size
         # print("nPerClass: ", nPerClass)
         # print("nClass: ", nClass)
@@ -156,7 +157,7 @@ class FisherFace():
         self.OptVect = self.fshVect.T @ eigVect.T # (c - 1) x m 
 
     def transform(self, X):
-        return (X - np.mean(X, 0)) @ self.OptVect.T # (N x m) @ (m x c-1) = N x (c - 1)
+        return (X - self.mean) @ self.OptVect.T # (N x m) @ (m x c-1) = N x (c - 1)
 
     def fit_transform(self, X, y):
         self.fit(X, y)
@@ -272,7 +273,9 @@ class LBP():
         dh = np.uint8(dh)
         dw = np.uint8(dw)
         hist = np.zeros((0, self.pattern.nBins))
-
+        # print(img.shape)
+        # print(row, col)
+        # print(dh, dw)
         for y in ly:
             for x in lx:
                 h = self.describe(img[y:y+dh, x:x+dw])
@@ -340,7 +343,7 @@ class PHOG():
         # step4: Compute phog 
         phog = np.zeros((0, self.nBins))
         for lev in range(self.level+1):
-            levelHog = self.compute_level_hog(imgMag, imgAngQ, lev)
+            levelHog = self.compute_level_hog(imgMag, imgAngQ, lev) + 0.0001
             phog = np.vstack([phog, levelHog])
         
         ## Normalize
@@ -421,7 +424,7 @@ class LPQ():
     """
     http://www.cse.oulu.fi/CMV/Downloads/LPQMatlab
     """
-    def __init__(self, rSize, alpha=None, rho=0.9):
+    def __init__(self, rSize=3, alpha=None, rho=0.9):
         """
         Args:
             rSize: Region size, This is a square window(Rsize x Rsize) for the DFT
@@ -452,10 +455,10 @@ class LPQ():
         self.w2 = np.conjugate(self.w1) # w(spIdx, -self.alpha)   
         # print("w0:{}\nw1:{}\nw2:{}\n".format(self.w0, self.w1, self.w2)) # Checked
         ## Compute W ~ transMt
-        q1 = self.w0.T @ self.w1
-        q2 = self.w1.T @ self.w0
-        q3 = self.w1.T @ self.w1
-        q4 = self.w1.T @ self.w2 
+        q1 = np.outer(self.w0, self.w1) # shape: rSize * rSize
+        q2 = np.outer(self.w1, self.w0)
+        q3 = np.outer(self.w1, self.w1)
+        q4 = np.outer(self.w1, self.w2) 
         # print("q1:{}\nq2:{}\nq3:{}\nq4:{}\n".format(q1, q2, q3, q4)) # CHecked
 
         transMt = np.vstack([q1.real.flatten(), 
@@ -560,44 +563,103 @@ class LPQ():
         hist /= np.sum(hist) 
         return hist.flatten()
 
-class MyFeature():
-    def __init__(self, nRows, nBins):
-        self.nRows = nRows
-        dAng = 360 / nBins 
-        self.bins = np.arange(0, 360, dAng)
-        self.lbp = LBP(8, 2)
+class CCDF():
+    """Conanical Correlate Discriminant Feature
+    """
+    def __init__(self, ccdfType, n_components=None):
+        """
+        Args:
+            ccdfType: 1 -> concatenate, 2 -> sum up.
+            n_components: default as the rank of the between-class scatter.
+        """
+        self.ccdfType = ccdfType
+        self.pcaX = PCA()
+        self.pcaY = PCA()
 
-    def describe(self, img):
-        kernel = np.ones((3, 3), np.float32)/9
-        imgBlur = cv2.filter2D(img, -1, kernel)
+    def fit(self, X, Y, label):
+        nPerClass = np.bincount(label.astype(np.int64))
+        nClass = nPerClass.size
+        nTotal = np.sum(nPerClass)
+        probPerClass = nPerClass / nTotal 
+        
+        ## PCA 
+        params = {"n_components": X.shape[0] - 1}
+        self.pcaX.set_params(**params)
+        self.pcaY.set_params(**params)
+        Xpca = self.pcaX.fit_transform(X)
+        Ypca = self.pcaY.fit_transform(Y)
 
-        gX = cv2.Sobel(imgBlur, cv2.CV_64F, 1, 0, ksize=3)
-        gY = cv2.Sobel(imgBlur, cv2.CV_64F, 0, 1, ksize=3)
-        imgMag, imgAng = cv2.cartToPolar(gX, gY, angleInDegrees=True);
-        imgAngQ = self.quantize(imgAng, self.bins)
-  
-        hist1 = self.lbp.describe(imgMag)
-        hist2 = self.lbp.describe(imgAngQ)
-        hist = np.hstack([hist1, hist2])
-        hist /= np.sum(hist)
-        return imgMag, hist
+        print("Number of per class: {}".format(nPerClass))
+        print("Number of Class: {}".format(nClass))
+        print("Number of total samples: {}".format(nTotal))
+        print(probPerClass)
+        meanX = np.mean(Xpca, 0)
+        meanY = np.mean(Ypca, 0)
+        meanClassX = np.zeros((nClass, Xpca.shape[1]))
+        meanClassY = np.zeros((nClass, Ypca.shape[1]))
+        for i in range(nClass):
+            meanClassX[i, :] = np.mean(Xpca[label==i, :], 0)
+            meanClassY[i, :] = np.mean(Ypca[label==i, :], 0)
 
-    @staticmethod
-    def quantize(imgAng, bins):
-        '''
-        quantize the angles according to the given number of bins. 
-        '''
-        unquantizeIdx = np.ones_like(imgAng, dtype=bool)
-        for i in bins[::-1]: # quantization starts from the largest angle
-            smallerIdx = imgAng <= 360
-            largerIdx = imgAng >= i
-            idx = np.logical_and(largerIdx, smallerIdx)
-            quantizeIdx = np.logical_and(idx, unquantizeIdx)
-            imgAng[quantizeIdx] = i 
-            unquantizeIdx = np.logical_xor(quantizeIdx, unquantizeIdx)
-        return imgAng
+        # Compute corelation matrices
+        Cwx = np.array([])
+        Cwy = np.array([])
+        print("X and Y shape: {}, {}".format(Xpca.shape, Ypca.shape))
+        print("meanClassX and meanClassY shape: {}, {}".format(meanClassX.shape, meanClassY.shape))
+        for i, p, mX, mY in zip(range(nClass), probPerClass, meanClassX, meanClassY):
+            tmpX = p * ((Xpca[label==i, :] - mX).T @ (Xpca[label==i, :] - mX))
+            tmpY = p * ((Ypca[label==i, :] - mY).T @ (Ypca[label==i, :] - mY))
+            Cwx =  Cwx + tmpX if Cwx.size else tmpX 
+            Cwy =  Cwy + tmpY if Cwy.size else tmpY 
 
+        # Compute covariance matrix 
+        Lxy = ((Xpca - meanX).T @ (Ypca - meanY))/ nTotal
+        # if self.n_components == None:
+        #     rank = np.linalg.matrix_rank(Lxy)
+        # else:
+        #     if self.n_components > np.linalg.matrix_rank(Lxy):
+        #         print("n_components should not be greater than the rank")
+        #         rank = np.linalg.matrix_rank(Lxy)
+        #     else:
+        #         rank = self.n_components
+        rank = np.linalg.matrix_rank(Lxy)
 
+        print("Cwx shape: {}".format(Cwx.shape))
+        print("Cwy shape: {}".format(Cwy.shape))
+        print("Lxy shape: {}".format(Lxy.shape))
+        print("rank: {}".format(rank))
+
+        M1 = la.pinv(Cwx) @ Lxy @ la.pinv(Cwy) @ Lxy.T # Lyx = Lxy.T
+        M2 = la.pinv(Cwy) @ Lxy.T @ la.pinv(Cwx) @ Lxy
+        valX, vectX = la.eigh(M1) 
+        valY, vectY = la.eigh(M2) 
+
+        self.Wx = vectX[:, np.argsort(valX)[::-1]][:, :rank] 
+        self.Wy = vectY[:, np.argsort(valY)[::-1]][:, :rank]
+
+        self.Wx /= np.sum(self.Wx)
+        self.Wy /= np.sum(self.Wy)
+
+    def transform(self, X, Y):
+        Xpca = self.pcaX.transform(X)
+        Ypca = self.pcaY.transform(Y)
+        projX = (Xpca @ self.Wx.T)
+        projY = (Ypca @ self.Wy.T) 
+
+        # projX /= np.sum(projX)
+        # projY /= np.sum(projY)
+        if self.ccdfType == 1:
+            Z = np.hstack([projX, projY])
+        else:
+            Z = projX + projY
+        Z /= np.sum(Z) 
+        return Z 
+
+    def fit_transform(self, X, Y, label):    
+        self.fit(X, Y, label)
+        return self.transform(X, Y) 
+        
+      
 def lbp_unit_test():
     img = np.arange(100).reshape(10, 10)
     weights = np.ones((5, 5)).reshape(-1, 1)
