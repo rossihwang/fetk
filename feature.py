@@ -268,14 +268,17 @@ class LBP():
         dh, dw = img.shape[0]/np.float(row), img.shape[1]/np.float(col)
         colTemp = np.ones(col); colTemp[0] = 0
         rowTemp = np.ones(row); rowTemp[0] = 0
-        lx = np.uint8(np.add.accumulate(colTemp * dw))
-        ly = np.uint8(np.add.accumulate(rowTemp * dh))
-        dh = np.uint8(dh)
-        dw = np.uint8(dw)
+        lx = np.uint16(np.add.accumulate(colTemp * dw))
+        ly = np.uint16(np.add.accumulate(rowTemp * dh))
+        
+        dh = np.int(dh)
+        dw = np.int(dw)
         hist = np.zeros((0, self.pattern.nBins))
+        
         # print(img.shape)
         # print(row, col)
         # print(dh, dw)
+
         for y in ly:
             for x in lx:
                 h = self.describe(img[y:y+dh, x:x+dw])
@@ -294,8 +297,8 @@ class LBP():
         """
         row, col = regions
         dh, dw = img.shape[0]/np.float(row), img.shape[1]/np.float(col)
-        lx = np.uint8(np.add.accumulate(np.ones(col-1) * dw))
-        ly = np.uint8(np.add.accumulate(np.ones(row-1) * dh))
+        lx = np.uint16(np.add.accumulate(np.ones(col-1) * dw))
+        ly = np.uint16(np.add.accumulate(np.ones(row-1) * dh))
         plt.figure()
         plt.imshow(img, cmap="gray")
         ax = plt.gca()
